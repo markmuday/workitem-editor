@@ -19,7 +19,7 @@ use crate::models::epic::{CreateEpic, Epic, UpdateEpic};
 )]
 pub async fn list_epics(State(pool): State<PgPool>) -> Result<Json<Vec<Epic>>, AppError> {
     let epics = sqlx::query_as::<_, Epic>(
-        "SELECT id, name, created_at, modified_at FROM epic ORDER BY created_at DESC NULLS LAST",
+        "SELECT id, name, created_at, modified_at FROM epic ORDER BY name ASC NULLS LAST",
     )
     .fetch_all(&pool)
     .await?;

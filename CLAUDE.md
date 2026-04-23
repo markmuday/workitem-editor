@@ -87,7 +87,7 @@ The server exposes a CRUD REST API for three resources:
 | Work Items    | `/api/work-items` |
 
 Standard CRUD operations per resource:
-- `GET    /api/{resource}`        — list all
+- `GET    /api/{resource}`        — list all (epics and team members sorted alphabetically by name, nulls last)
 - `POST   /api/{resource}`        — create
 - `GET    /api/{resource}/{id}`   — get by ID
 - `PUT    /api/{resource}/{id}`   — full update
@@ -192,7 +192,107 @@ Use a multi-stage build:
 
 ## Frontend (`ui/`)
 
-React frontend. Implementation details TBD. Will consume the API server.
+### Stack
+
+- **Build tool**: Vite
+- **Framework**: React 19 with TypeScript
+- **Routing**: React Router v7 (`createBrowserRouter`)
+- **Data fetching**: TanStack Query v5
+- **UI components**: shadcn/ui (Radix-based, Tailwind-styled)
+- **Styling**: Tailwind CSS v4
+
+### Code Organization
+
+```
+ui/src/
+├── layouts/
+│   └── root-layout.tsx   # Sidebar nav + <Outlet /> wrapper
+├── pages/
+│   ├── home.tsx
+│   ├── epics.tsx
+│   ├── team-members.tsx
+│   └── work-items.tsx
+├── lib/
+│   └── api.ts            # Typed fetch wrappers for all API endpoints
+├── components/
+│   └── ui/               # shadcn components (button, input, …)
+└── main.tsx              # Router + QueryClientProvider setup
+```
+
+### API Client (`lib/api.ts`)
+
+All API calls go through typed wrappers in `lib/api.ts`. Each resource has a plain object (`epicsApi`, `teamMembersApi`, etc.) with `list`, `create`, `update`, and `delete` methods. They call a shared `request<T>` helper that handles `Content-Type`, error throwing, and the 204 no-body case. Pages import these and pass them directly to `useMutation` / `useQuery`.
+
+The Vite dev server proxies `/api/*` to `http://localhost:8080` so the UI and API can run on separate ports without CORS issues.
+
+### UI Patterns
+
+- **Inline editing**: clicking a row's text replaces it with a focused `<Input>`. Enter or blur commits; Escape restores the original value. This avoids modals for simple edits.
+- **Adding rows**: "Add" button appends a `NewItemRow` component with a focused empty input below the list. Enter creates; Escape or empty blur dismisses.
+- **Optimistic-free**: mutations call `invalidateQueries` on success — no manual cache updates. The latency is acceptable and it keeps mutation code simple.
+
+---
+
+## Testing
+
+### API Integration Tests
+
+Integration tests are the primary testing mechanism for the API. Unit tests alone are not sufficient — all handler logic must be covered by integration tests that run against a real PostgreSQL database.
+
+- Integration tests live in `api/tests/`
+- Each test file corresponds to a resource (e.g., `tests/epics.rs`, `tests/team_members.rs`, `tests/work_items.rs`)
+- Tests use `#[sqlx::test]` which automatically creates and tears down an isolated database per test — no manual cleanup needed
+- Tests must cover: create, read (single and list), update, delete, and not-found error cases
+- The shared `MIGRATOR` is defined in `lib.rs` and referenced as `#[sqlx::test(migrator = "work_item_editor_api::MIGRATOR")]`
+
+```bash
+# From api/
+cargo test
+```
+
+`DATABASE_URL` must point to a Postgres server where the user can create and drop databases. `#[sqlx::test]` handles database creation and teardown automatically.
+
+### UI Unit Tests (Vitest + React Testing Library + MSW)
+
+Component-level tests that run entirely in Node — no browser, no server required.
+
+```bash
+# From ui/
+npm test          # run once
+npm run test:watch  # watch mode
+```
+
+**Key files:**
+```
+ui/src/test/
+├── setup.ts       # jest-dom matchers + MSW lifecycle (beforeAll/afterEach/afterAll)
+├── handlers.ts    # MSW request handlers with fixture data for all endpoints
+├── server.ts      # MSW Node server instance
+└── render.tsx     # renderWithProviders() — wraps components in QueryClientProvider
+```
+
+**Design choices:**
+- **`include: ["src/**/*.{test,spec}.{ts,tsx}"]` in `vite.config.ts`** scopes Vitest to `src/` only. Without this, Vitest picks up `e2e/*.spec.ts` (Playwright files) and fails because Playwright's `test.afterEach` API is incompatible with Vitest.
+- **MSW intercepts at the network boundary**, not by mocking `fetch` or the API module. The component code is identical to production; only the HTTP responses differ. This means routing, React Query caching, and loading/error states are all exercised.
+- **`retry: false` on the test QueryClient** prevents Vitest from hanging while React Query retries failed requests in error-state tests.
+- **Each test file gets a fresh QueryClient** via `renderWithProviders`, so cached data from one test never leaks into another.
+- **`server.resetHandlers()` in `afterEach`** restores the default handlers after any test that overrides them with `server.use(...)`.
+
+### UI End-to-End Tests (Playwright)
+
+Full-stack browser tests against the real running API and database. Nothing is mocked.
+
+```bash
+# From ui/ — requires both the API server and Cloud SQL proxy to be running
+npm run test:e2e
+```
+
+**Design choices:**
+- **`fullyParallel: false`**: tests run serially because they share a real database. Parallel execution would cause race conditions on list queries that assert on specific items.
+- **`reuseExistingServer: true`**: Playwright uses the already-running Vite dev server instead of starting a new one. If the dev server isn't running it will start one automatically.
+- **`[e2e]` prefix on test data**: every item created by a test is named `[e2e] …`. The `afterEach` hook queries the API and deletes any items whose name starts with `[e2e]`, so test runs never leave permanent data in the database.
+- **API request context for setup/teardown**: test fixtures are created and cleaned up via `request` (Playwright's API client) rather than through the UI. This keeps tests focused — a delete test doesn't also test create, and a create test doesn't need to navigate to clean up.
+- **Tests are independent of existing data**: assertions only reference items created within the current test, so the tests pass regardless of what's already in the database.
 
 ---
 
@@ -201,21 +301,52 @@ React frontend. Implementation details TBD. Will consume the API server.
 ### Prerequisites
 
 - Rust (stable, via rustup)
-- PostgreSQL running locally or Cloud SQL proxy
+- Cloud SQL Auth Proxy (for local development against Cloud SQL)
 - `sqlx-cli`: `cargo install sqlx-cli --no-default-features --features rustls,postgres`
-- Node.js (for `ui/`)
+- Node.js 20+
 
-### Local API Dev
+### Starting Everything Locally
 
-Create `api/.env` (gitignored) with your `DATABASE_URL`. Special characters in the password must be percent-encoded. Then:
+**1. Start the Cloud SQL proxy** (in its own terminal):
+
+```bash
+cloud-sql-proxy <PROJECT>:<REGION>:<INSTANCE> --port 5434
+```
+
+**2. Start the API server** (in its own terminal):
 
 ```bash
 cd api
-cargo sqlx migrate run
 cargo run
+# API available at http://localhost:8080
+# Swagger UI at http://localhost:8080/swagger-ui
 ```
 
-The server loads `.env` automatically at startup via `dotenvy`.
+The server loads `api/.env` automatically via `dotenvy`. Create it if it doesn't exist:
+```
+DATABASE_URL=postgresql://user:password@localhost:5434/dbname
+```
+Special characters in the password must be percent-encoded.
 
-API will be available at `http://localhost:8080`.
-Swagger UI at `http://localhost:8080/swagger-ui`.
+**3. Start the UI dev server** (in its own terminal):
+
+```bash
+cd ui
+npm install
+npm run dev
+# UI available at http://localhost:5174
+# /api/* requests are proxied to http://localhost:8080
+```
+
+### Running All Tests
+
+```bash
+# API integration tests (requires Cloud SQL proxy + DATABASE_URL)
+cd api && cargo test
+
+# UI unit tests (no server needed)
+cd ui && npm test
+
+# UI end-to-end tests (requires API server + Cloud SQL proxy + ui dev server)
+cd ui && npm run test:e2e
+```

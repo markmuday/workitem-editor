@@ -116,7 +116,7 @@ async fn get_returns_404_for_unknown_id(pool: PgPool) {
 #[sqlx::test(migrator = "work_item_editor_api::MIGRATOR")]
 async fn list_returns_all_members(pool: PgPool) {
     let app = create_app(pool);
-    for name in ["Alice", "Bob", "Carol"] {
+    for name in ["Carol", "Alice", "Bob"] {
         app.clone()
             .oneshot(post_json("/api/team-members", json!({ "name": name })))
             .await
@@ -124,7 +124,10 @@ async fn list_returns_all_members(pool: PgPool) {
     }
     let res = app.oneshot(get("/api/team-members")).await.unwrap();
     let body = body_json(res).await;
-    assert_eq!(body.as_array().unwrap().len(), 3);
+    let names: Vec<&str> = body.as_array().unwrap().iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Alice", "Bob", "Carol"]);
 }
 
 #[sqlx::test(migrator = "work_item_editor_api::MIGRATOR")]

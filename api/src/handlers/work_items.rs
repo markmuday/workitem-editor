@@ -43,14 +43,15 @@ pub async fn create_work_item(
     Json(body): Json<CreateWorkItem>,
 ) -> Result<(StatusCode, Json<WorkItem>), AppError> {
     let item = sqlx::query_as::<_, WorkItem>(
-        "INSERT INTO work_item (description, team_member_id, epic_id, percent_of_day)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO work_item (description, team_member_id, epic_id, percent_of_day, created_at)
+         VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
          RETURNING id, description, team_member_id, epic_id, percent_of_day, created_at, updated_at",
     )
     .bind(body.description)
     .bind(body.team_member_id)
     .bind(body.epic_id)
     .bind(body.percent_of_day)
+    .bind(body.created_at)
     .fetch_one(&pool)
     .await?;
     Ok((StatusCode::CREATED, Json(item)))
@@ -102,14 +103,16 @@ pub async fn update_work_item(
              team_member_id = $2,
              epic_id = $3,
              percent_of_day = $4,
+             created_at = COALESCE($5, created_at),
              updated_at = NOW()
-         WHERE id = $5
+         WHERE id = $6
          RETURNING id, description, team_member_id, epic_id, percent_of_day, created_at, updated_at",
     )
     .bind(body.description)
     .bind(body.team_member_id)
     .bind(body.epic_id)
     .bind(body.percent_of_day)
+    .bind(body.created_at)
     .bind(id)
     .fetch_one(&pool)
     .await?;

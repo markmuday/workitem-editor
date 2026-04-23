@@ -21,6 +21,7 @@ pub struct CreateWorkItem {
     pub team_member_id: Option<Uuid>,
     pub epic_id: Option<Uuid>,
     pub percent_of_day: Option<i32>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -29,4 +30,5 @@ pub struct UpdateWorkItem {
     pub team_member_id: Option<Uuid>,
     pub epic_id: Option<Uuid>,
     pub percent_of_day: Option<i32>,
+    pub created_at: Option<DateTime<Utc>>,
 }

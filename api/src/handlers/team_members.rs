@@ -21,7 +21,7 @@ pub async fn list_team_members(
     State(pool): State<PgPool>,
 ) -> Result<Json<Vec<TeamMember>>, AppError> {
     let members = sqlx::query_as::<_, TeamMember>(
-        "SELECT id, name, created_at, updated_at, last_epic_id FROM team_member ORDER BY created_at DESC NULLS LAST",
+        "SELECT id, name, created_at, updated_at, last_epic_id FROM team_member ORDER BY name ASC NULLS LAST",
     )
     .fetch_all(&pool)
     .await?;
